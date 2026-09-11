@@ -23,3 +23,10 @@ jobs:
             **/node_modules/**
             README.md
             .gitignore
+            # Live site data (site.json, users.json, pages, SEO, revisions…) is
+            # edited by the CMS on the server. The copies in this repo are the
+            # blank template files from setup — never let a deploy overwrite the
+            # real ones. (A brand-new site DOES need data/ deployed once, so do
+            # not copy this line into the Site Factory template.)
+            data/**
+            docs/**

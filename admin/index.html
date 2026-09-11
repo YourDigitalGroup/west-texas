@@ -1633,7 +1633,9 @@ textarea.fb-input{resize:vertical}
            PLUGINS / INJECTIONS
       ═══════════════════════════════════════════════════════ -->
       <div class="panel" id="p-inject">
-        <div class="ta"><button class="fd-btn-primary" onclick="saveInjections()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg> Save &amp; Publish</button></div>
+        <!-- The old "Save & Publish" only wrote data/injections.json, which no page
+             ever read — snippets are published from Analytics → Custom Code. -->
+        <div class="ta"><button class="fd-btn-secondary" onclick="navTo('analytics');setTimeout(function(){gaTab('setup');},50)">Open Custom Code →</button></div>
         <div id="plugins-body"></div>
       </div>
 
@@ -6454,17 +6456,21 @@ const PLUG_PRESETS=[
 function renderPlugins(){
   const body=document.getElementById('plugins-body');if(!body)return;
   const active=_inject.filter(p=>p.active!==false);
-  const presets=PLUG_PRESETS.map((preset,i)=>{
-    const existing=_inject.find(p=>p.name===preset.name);
-    const isOn=existing?.active!==false&&!!existing;
-    return`<div class="pl-row"><span class="pl-logo">${preset.logo||`<i class="fa-solid ${preset.icon}" style="color:var(--muted);font-size:16px"></i>`}</span><div style="flex:1"><div class="pl-n">${esc(preset.name)}</div><div class="pl-s">${esc(preset.desc)}</div></div><label class="tog"><input type="checkbox" ${isOn?'checked':''} onchange="togglePlugin('${esc(preset.name)}',this.checked,${i})"><span class="tog-sl"></span></label></div>`;}).join('');
+  // The old on/off toggles only wrote data/injections.json — nothing ever read
+  // that file back into the pages, so a "published" pixel was never on the site.
+  // Each preset now points at the Custom Code slot that actually publishes.
+  const presets=PLUG_PRESETS.map(preset=>{
+    const home=PLUG_PRESET_HOME[preset.name]||'Functional → Header';
+    return`<div class="pl-row"><span class="pl-logo">${preset.logo||`<i class="fa-solid ${preset.icon}" style="color:var(--muted);font-size:16px"></i>`}</span><div style="flex:1"><div class="pl-n">${esc(preset.name)}</div><div class="pl-s">${esc(preset.desc)} · Custom Code → ${home}</div></div><button class="fd-btn-secondary" style="font-size:12px;padding:6px 12px;white-space:nowrap" onclick="navTo('analytics');setTimeout(function(){gaTab('setup');},50)">Open Custom Code →</button></div>`;}).join('');
   body.innerHTML=recaptchaAddonHtml()
     +ghlAddonHtml()
     +mailAddonHtml()
     +`<div class="pl-sec-label">Code injections</div>`
-    +`<div class="info-b" style="margin-bottom:14px">Active code injections are added to every page when published. ${active.length} active. <strong>Google Analytics has moved</strong> — set up GA4, Tag Manager, and Ads in the <a href="#" onclick="navTo('analytics');return false" style="color:var(--ember);font-weight:600">Analytics module</a>.</div>`
+    +`<div class="info-b" style="margin-bottom:14px"><strong>Code injections have moved to Analytics → Custom Code.</strong> Paste any snippet there (Functional / Analytics / Marketing, header or body) and <em>Save &amp; Apply to All Pages</em> publishes it to every page inside a managed block — nothing on this panel writes to your pages. Google Analytics, Tag Manager and Ads are set up in the <a href="#" onclick="navTo('analytics');return false" style="color:var(--ember);font-weight:600">Analytics module</a> as well.${active.length?' <span style="color:var(--muted)">('+active.length+' legacy toggle'+(active.length===1?'':'s')+' still saved in data/injections.json — not published.)</span>':''}</div>`
     +presets;
 }
+// Where each legacy preset now lives in Analytics → Custom Code.
+const PLUG_PRESET_HOME={'Facebook Pixel':'Marketing → Header','Custom CSS':'Functional → Header (wrap it in a &lt;style&gt; tag)','Custom JavaScript':'Functional → Body'};
 // The reCAPTCHA add-on lives here in Plugins (its home) instead of buried in Site
 // Foundry. Keys are stored server-side in site.json (saveRecaptcha → saveSiteInfo);
 // api.php verifies submissions; renderFormHtml injects the widget into every form
@@ -7357,6 +7363,10 @@ const BLOCK_TYPES=[
 // ═══════════════════════════════════════════════════════════════
 let _pages={}, _pagesSHA='', _curPage='home';
 let _veHtml={}, _veOrigHtml={};
+// Page id → the HTML as it exists in the FILE on the server (read on load, updated
+// on save). veStripRuntimeDom compares the live document against it: a custom
+// element, script or stylesheet the file never mentions was injected at runtime.
+let _veDiskHtml={};
 let _veSel=null;
 
 function getPageList(){
@@ -8038,6 +8048,12 @@ async function veLoadPage(id){
           // already ran on this live load never counts as page content.
           _veHtml[id]=veSerializeClean()||('<!DOCTYPE html>\n'+doc.documentElement.outerHTML);
           _veOrigHtml[id]=_veHtml[id];
+          // The live page has already run its scripts here, so fetch the FILE in the
+          // background as the reference for the "not on disk → injected at runtime"
+          // guard in veStripRuntimeDom. Never blocks; the selector list still applies
+          // if it hasn't arrived by the time the page is saved.
+          delete _veDiskHtml[id];
+          if(canCallApi()) apiCall('read_file',{path:filePath}).then(d=>{ if(d&&d.content) _veDiskHtml[id]=d.content; }).catch(()=>{});
           captureFooterCredit(doc); // remember the "Site by …" credit for the login panel
         }catch(e){
           // Cross-origin or other error — fall back to srcdoc via api.php
@@ -8069,6 +8085,7 @@ async function veLoadPageViaApi(id,filePath){
       }
       _veHtml[id]=html;
       _veOrigHtml[id]=html;
+      _veDiskHtml[id]=html;
       veRenderHtml(id,html);
       return;
     }
@@ -9479,20 +9496,48 @@ const VE_RUNTIME_DOM_SELECTORS=[
   // ADAptify rebuilds itself on every load; its live DOM is never page content
   '#adaptify-root','#adaptify-dyn','#adaptify-mag','#adaptify-guide','.adaptify-mask'
 ];
+// Tags the CMS or the editor placed on purpose (SEO, brand, favicon, reCAPTCHA,
+// per-page CSS/JS, fonts picked in the editor…) all carry a data-fourge-* /
+// data-foundry-* attribute. They are never treated as runtime injections.
+function veIsCmsManaged(el){
+  if(!el||!el.attributes) return false;
+  for(const a of el.attributes){ if(a.name.indexOf('data-fourge')===0||a.name.indexOf('data-foundry')===0) return true; }
+  return false;
+}
 // Remove every runtime-injected node under `root` (a Document, or an Element
-// such as a cloned <html>/<footer>). Returns the number of nodes removed.
-function veStripRuntimeDom(root){
+// such as a cloned <html>/<footer>). `diskHtml`, when known, is the page as it
+// exists in the server FILE and enables a second, vendor-agnostic pass: any
+// custom element, external script or stylesheet the file never mentions was
+// injected by a script at runtime. Returns the number of nodes removed.
+function veStripRuntimeDom(root, diskHtml){
   if(!root||!root.querySelectorAll) return 0;
   let n=0;
+  // Loaders wrap their widget in a bare positioning <div>; drop it once empty.
+  const dropWrapper=p=>{ if(p&&p.tagName==='DIV'&&!p.id&&!p.className&&!p.children.length&&!p.textContent.trim()) p.remove(); };
+  // Pass 1 — known runtime output.
   VE_RUNTIME_DOM_SELECTORS.forEach(sel=>{
     let nodes=[]; try{ nodes=[...root.querySelectorAll(sel)]; }catch(e){ return; }
-    nodes.forEach(el=>{
-      const p=el.parentElement;
-      el.remove(); n++;
-      // Loaders wrap their widget in a bare positioning <div>; drop it once empty.
-      if(p&&p.tagName==='DIV'&&!p.id&&!p.className&&!p.children.length&&!p.textContent.trim()) p.remove();
-    });
+    nodes.forEach(el=>{ const p=el.parentElement; el.remove(); n++; dropWrapper(p); });
   });
+  // Pass 2 — anything the file on disk never mentions (catches vendors that
+  // aren't on the list above). Only while the disk copy is known; a page that
+  // already carries a baked-in copy is handled by pass 1, not this one.
+  if(typeof diskHtml==='string' && diskHtml.length){
+    const disk=diskHtml.toLowerCase();
+    [...root.querySelectorAll('*')].forEach(el=>{
+      const tag=el.tagName.toLowerCase();
+      if(tag.indexOf('-')===-1||!root.contains(el)||veIsCmsManaged(el)) return;   // custom elements only
+      if(disk.indexOf('<'+tag)!==-1) return;                                      // authored in the file
+      const p=el.parentElement; el.remove(); n++; dropWrapper(p);
+    });
+    root.querySelectorAll('script[src],link[rel="stylesheet"][href]').forEach(el=>{
+      if(veIsCmsManaged(el)||!root.contains(el)) return;
+      const ref=(el.getAttribute('src')||el.getAttribute('href')||'').trim(); if(!ref) return;
+      if(diskHtml.indexOf(ref)!==-1) return;                                      // referenced in the file
+      const bare=ref.split(/[?#]/)[0]; if(bare&&diskHtml.indexOf(bare)!==-1) return; // same file, new cache-buster
+      el.remove(); n++;
+    });
+  }
   // ADAptify also toggles adaptify-* classes on <html> for the editor's OWN
   // browser prefs (contrast, font…) — those must not become the page's classes.
   const htmlEl=root.documentElement||(root.tagName==='HTML'?root:null);
@@ -9509,7 +9554,7 @@ function veSerializeClean(){
   const doc=iframe&&iframe.contentDocument;
   if(!doc||!doc.documentElement) return null;
   const root=doc.documentElement.cloneNode(true);
-  veStripRuntimeDom(root);
+  veStripRuntimeDom(root, _veDiskHtml[_curPage]);
   ['__fe_done__','__fe_ov__','__fe_badge__','__fe_handles__','__foundry_bridge__','__ve_pause_style__','__fe_fmt__'].forEach(id=>{ root.querySelector('#'+id)?.remove(); });
   root.querySelectorAll('style').forEach(s=>{ if(s.textContent.includes('__fe_')||s.dataset.foundry) s.remove(); });
   root.classList.remove('__ve_paused');
@@ -10056,7 +10101,7 @@ async function veSaveTemplateToAll(zone){
   // Serialize a CLEAN clone: anything a widget injected into this section at
   // runtime must not be stamped onto every page (see veStripRuntimeDom).
   const tplClone = el.cloneNode(true);
-  veStripRuntimeDom(tplClone);
+  veStripRuntimeDom(tplClone, _veDiskHtml[_curPage]);
   const templateHtml = tplClone.outerHTML;
   const pages = getPageList();
   if(!pages.length){ toast('No pages found','err'); return; }
@@ -10748,6 +10793,7 @@ async function veSavePage(){
 
     _veHtml[_curPage]=html;
     _veOrigHtml[_curPage]=html;
+    _veDiskHtml[_curPage]=html;   // what is on disk now
     document.getElementById('ve-unsaved')?.classList.remove('on');
     renderVePageList();
 
